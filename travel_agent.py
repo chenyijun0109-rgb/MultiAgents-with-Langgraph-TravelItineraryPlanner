@@ -46,20 +46,8 @@ class GraphState(TypedDict):
 
 workflow = StateGraph(GraphState)
 workflow.add_node("generate_itinerary", generate_itinerary.generate_itinerary)
-workflow.add_node("recommend_activities", recommend_activities.recommend_activities)
-workflow.add_node("fetch_useful_links", fetch_useful_links.fetch_useful_links)
-workflow.add_node("weather_forecaster", weather_forecaster.weather_forecaster)
-workflow.add_node("packing_list_generator", packing_list_generator.packing_list_generator)
-workflow.add_node("food_culture_recommender", food_culture_recommender.food_culture_recommender)
-workflow.add_node("chat", chat_agent.chat_node)
 workflow.set_entry_point("generate_itinerary")
 workflow.add_edge("generate_itinerary", END)
-workflow.add_edge("recommend_activities", END)
-workflow.add_edge("fetch_useful_links", END)
-workflow.add_edge("weather_forecaster", END)
-workflow.add_edge("packing_list_generator", END)
-workflow.add_edge("food_culture_recommender", END)
-workflow.add_edge("chat", END)
 graph = workflow.compile()
 
 # ------------------- UI -------------------
