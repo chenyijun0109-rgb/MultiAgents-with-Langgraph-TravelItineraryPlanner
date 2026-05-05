@@ -9,6 +9,7 @@ AUTOCOMPLETE_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json
 DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
+DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 
 
 def get_google_maps_api_key() -> str:
@@ -105,6 +106,124 @@ def make_photo_url(photo_reference: str, max_width: int = 800) -> str:
         "key": api_key,
     }
     return f"{PHOTO_URL}?{urlencode(params)}"
+
+
+def _format_route_location(location: dict) -> str:
+    place_id = location.get("place_id")
+    if place_id:
+        return f"place_id:{place_id}"
+    return f"{location['lat']},{location['lng']}"
+
+
+def _format_maps_url_location(location: dict) -> str:
+    if location.get("name"):
+        return location["name"]
+    return f"{location['lat']},{location['lng']}"
+
+
+def make_directions_url(locations: list[dict], travel_mode: str = "walking") -> str:
+    if len(locations) < 2:
+        return ""
+
+    origin = _format_maps_url_location(locations[0])
+    destination = _format_maps_url_location(locations[-1])
+    waypoints = "|".join(_format_maps_url_location(location) for location in locations[1:-1][:9])
+    params = {
+        "api": "1",
+        "origin": origin,
+        "destination": destination,
+        "travelmode": travel_mode,
+    }
+    if waypoints:
+        params["waypoints"] = waypoints
+    return f"https://www.google.com/maps/dir/?{urlencode(params)}"
+
+
+def decode_polyline(polyline: str) -> list[list[float]]:
+    index = 0
+    lat = 0
+    lng = 0
+    coordinates = []
+
+    while index < len(polyline):
+        result = 0
+        shift = 0
+        while True:
+            byte = ord(polyline[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lat += ~(result >> 1) if result & 1 else result >> 1
+
+        result = 0
+        shift = 0
+        while True:
+            byte = ord(polyline[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lng += ~(result >> 1) if result & 1 else result >> 1
+
+        coordinates.append([lng * 1e-5, lat * 1e-5])
+
+    return coordinates
+
+
+def get_directions_route(
+    locations: list[dict],
+    travel_mode: str = "walking",
+    language: str = "en",
+) -> tuple[dict | None, str | None]:
+    api_key = get_google_maps_api_key()
+    if not api_key:
+        return None, "GOOGLE_MAPS_API_KEY is not configured."
+
+    if len(locations) < 2:
+        return None, None
+
+    params = {
+        "origin": _format_route_location(locations[0]),
+        "destination": _format_route_location(locations[-1]),
+        "mode": travel_mode,
+        "language": language,
+        "key": api_key,
+    }
+    waypoints = [_format_route_location(location) for location in locations[1:-1]]
+    if waypoints:
+        params["waypoints"] = "|".join(waypoints)
+
+    try:
+        data = _get_json(f"{DIRECTIONS_URL}?{urlencode(params)}")
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as e:
+        return None, f"Google Directions request failed: {e}"
+
+    status = data.get("status")
+    if status == "ZERO_RESULTS":
+        return None, "No route found for this day."
+    if status != "OK":
+        return None, data.get("error_message") or f"Google Directions failed: {status}"
+
+    route = data.get("routes", [{}])[0]
+    encoded_polyline = route.get("overview_polyline", {}).get("points", "")
+    if not encoded_polyline:
+        return None, "Google Directions did not return a route polyline."
+
+    legs = route.get("legs", [])
+    distance_meters = sum(leg.get("distance", {}).get("value", 0) for leg in legs)
+    duration_seconds = sum(leg.get("duration", {}).get("value", 0) for leg in legs)
+    return {
+        "path": decode_polyline(encoded_polyline),
+        "distance_meters": distance_meters,
+        "duration_seconds": duration_seconds,
+        "summary": route.get("summary", ""),
+        "warnings": route.get("warnings", []),
+        "copyrights": route.get("copyrights", ""),
+        "maps_url": make_directions_url(locations, travel_mode),
+    }, None
 
 
 def search_hotel(

@@ -20,6 +20,7 @@ from agents import (
 )
 from services.google_maps_service import (
     autocomplete_cities,
+    get_directions_route,
     get_google_maps_api_key,
     get_place_details,
     search_place,
@@ -71,6 +72,8 @@ class GraphState(TypedDict):
     warning: str
     map_points: list[dict]
     map_warnings: list[str]
+    route_paths: list[dict]
+    route_warnings: list[str]
     itinerary_versions: list[dict]
     current_itinerary_version: int
     latest_revision_request: str
@@ -116,6 +119,20 @@ def cached_place_search(
     return search_place(place_name, destination_name, destination_lat, destination_lng)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_directions_route(route_locations: tuple[tuple, ...]) -> tuple[dict | None, str | None]:
+    locations = [
+        {
+            "name": location[0],
+            "place_id": location[1],
+            "lat": location[2],
+            "lng": location[3],
+        }
+        for location in route_locations
+    ]
+    return get_directions_route(locations)
+
+
 def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict], list[str]]:
     points = []
     warnings = []
@@ -135,6 +152,7 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
                 "address": hotel.get("address", ""),
                 "maps_url": hotel.get("maps_url", ""),
                 "photo_url": hotel.get("photo_url", ""),
+                "place_id": hotel.get("place_id", ""),
                 "color": [33, 33, 33, 235],
                 "marker": TYPE_MARKERS["hotel"],
             }
@@ -176,6 +194,7 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
                     "address": place.get("address", ""),
                     "maps_url": place.get("maps_url", ""),
                     "photo_url": place.get("photo_url", ""),
+                    "place_id": place.get("place_id", ""),
                     "color": day_color,
                     "marker": TYPE_MARKERS.get(item_type, "P"),
                 }
@@ -188,13 +207,77 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
     return points, warnings
 
 
+def _route_location_key(point: dict) -> tuple:
+    return (
+        point.get("name", ""),
+        point.get("place_id", ""),
+        point.get("lat"),
+        point.get("lng"),
+    )
+
+
+def build_route_locations_for_day(points: list[dict], day_number: int) -> list[dict]:
+    hotel = next((point for point in points if point.get("type") == "hotel"), None)
+    day_points = sorted(
+        [point for point in points if point.get("day") == day_number],
+        key=lambda point: point.get("order", 0),
+    )
+
+    if hotel and day_points:
+        return [hotel, *day_points, hotel]
+
+    return day_points
+
+
+def build_real_routes(points: list[dict]) -> tuple[list[dict], list[str]]:
+    routes = []
+    warnings = []
+    day_numbers = sorted({point.get("day") for point in points if point.get("day")})
+
+    for day_number in day_numbers:
+        locations = build_route_locations_for_day(points, day_number)
+        if len(locations) < 2:
+            continue
+
+        if len(locations) > 11:
+            locations = [locations[0], *locations[1:10], locations[-1]]
+
+        route, error = cached_directions_route(tuple(_route_location_key(location) for location in locations))
+        if error:
+            warnings.append(f"Day {day_number}: {error}")
+            continue
+        if not route or not route.get("path"):
+            continue
+
+        color = DAY_COLORS[(int(day_number) - 1) % len(DAY_COLORS)]
+        routes.append(
+            {
+                "day": day_number,
+                "path": route["path"],
+                "color": color,
+                "maps_url": route.get("maps_url", ""),
+                "distance_meters": route.get("distance_meters", 0),
+                "duration_seconds": route.get("duration_seconds", 0),
+                "summary": route.get("summary", ""),
+                "warnings": route.get("warnings", []),
+                "copyrights": route.get("copyrights", ""),
+            }
+        )
+
+    return routes, warnings
+
+
 def refresh_map_state(state: dict) -> None:
     map_points, map_warnings = build_map_points(
         state.get("preferences", {}),
         state.get("itinerary_data", {}),
     )
+    route_paths, route_warnings = build_real_routes(map_points)
     state["map_points"] = map_points
     state["map_warnings"] = map_warnings
+    state["route_paths"] = route_paths
+    state["route_warnings"] = route_warnings
+
 
 
 def save_itinerary_version(state: dict, change_request: str = "", revision_summary: str = "") -> None:
@@ -251,16 +334,28 @@ def build_route_segments(points: list[dict]) -> list[dict]:
     return segments
 
 
-def render_itinerary_map(points: list[dict]) -> None:
+def render_itinerary_map(points: list[dict], route_paths: list[dict] | None = None) -> None:
     if not points:
         return
 
-    route_segments = build_route_segments(points)
+    route_paths = route_paths or []
+    route_segments = [] if route_paths else build_route_segments(points)
     center_lat = sum(point["lat"] for point in points) / len(points)
     center_lng = sum(point["lng"] for point in points) / len(points)
 
     layers = []
-    if route_segments:
+    if route_paths:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=route_paths,
+                get_path="path",
+                get_color="color",
+                get_width=5,
+                pickable=True,
+            )
+        )
+    elif route_segments:
         layers.append(
             pdk.Layer(
                 "LineLayer",
@@ -343,6 +438,8 @@ if "state" not in st.session_state:
         "warning": "",
         "map_points": [],
         "map_warnings": [],
+        "route_paths": [],
+        "route_warnings": [],
         "itinerary_versions": [],
         "current_itinerary_version": 0,
         "latest_revision_request": "",
@@ -470,6 +567,8 @@ if submit_btn:
             "warning": "",
             "map_points": [],
             "map_warnings": [],
+            "route_paths": [],
+            "route_warnings": [],
             "itinerary_versions": [],
             "current_itinerary_version": 0,
             "latest_revision_request": "",
@@ -504,7 +603,24 @@ if st.session_state.state.get("itinerary"):
 
         if st.session_state.state.get("map_points"):
             st.markdown("### Map Overview")
-            render_itinerary_map(st.session_state.state["map_points"])
+            render_itinerary_map(
+                st.session_state.state["map_points"],
+                st.session_state.state.get("route_paths", []),
+            )
+            if st.session_state.state.get("route_paths"):
+                with st.expander("Daily Route Links", expanded=False):
+                    for route in st.session_state.state["route_paths"]:
+                        distance_km = route.get("distance_meters", 0) / 1000
+                        duration_min = route.get("duration_seconds", 0) // 60
+                        route_text = f"Day {route['day']}: {distance_km:.1f} km, about {duration_min} min"
+                        if route.get("maps_url"):
+                            st.markdown(f"- [{route_text}]({route['maps_url']})")
+                        else:
+                            st.markdown(f"- {route_text}")
+            if st.session_state.state.get("route_warnings"):
+                with st.expander("Route Warnings", expanded=False):
+                    for warning in st.session_state.state["route_warnings"]:
+                        st.warning(warning)
             with st.expander("Map Places", expanded=False):
                 for point in st.session_state.state["map_points"]:
                     label = f"Day {point['day']}" if point.get("day") else "Hotel"
