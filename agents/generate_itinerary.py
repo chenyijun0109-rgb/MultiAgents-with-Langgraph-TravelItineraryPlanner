@@ -1,65 +1,8 @@
 from langchain_core.messages import HumanMessage
 from langchain_community.chat_models import ChatOllama
 import json
-import re
 
-
-def _extract_json_object(text: str) -> dict | None:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    try:
-        return json.loads(cleaned[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-
-def _fallback_markdown_from_data(data: dict) -> str:
-    lines = [f"# {data.get('title', 'Travel Itinerary')}", ""]
-    if data.get("summary"):
-        lines.extend([data["summary"], ""])
-
-    for day in data.get("days", []):
-        heading = f"## Day {day.get('day', '')}: {day.get('date', '')}"
-        if day.get("title"):
-            heading += f" - {day['title']}"
-        lines.extend([heading, ""])
-
-        for item in day.get("items", []):
-            time_label = item.get("time", "Flexible")
-            name = item.get("name", "Activity")
-            item_type = item.get("type", "activity")
-            description = item.get("description", "")
-            transport = item.get("transport_note", "")
-            lines.append(f"### {time_label}: {name}")
-            lines.append(f"*{item_type.title()}*")
-            if description:
-                lines.append(description)
-            if transport:
-                lines.append(f"Transport: {transport}")
-            lines.append("")
-
-        dining = day.get("dining")
-        if dining:
-            lines.extend(["**Dining**", dining, ""])
-
-        downtime = day.get("downtime")
-        if downtime:
-            lines.extend(["**Downtime**", downtime, ""])
-
-    return "\n".join(lines).strip()
+from agents.itinerary_schema import markdown_from_itinerary_data, parse_and_validate_itinerary
 
 
 def generate_itinerary(state):
@@ -127,16 +70,30 @@ def generate_itinerary(state):
     - Keep every string value short and single-line so the JSON remains valid.
     """
     try:
-        result = llm.invoke([HumanMessage(content=prompt)]).content
-        itinerary_data = _extract_json_object(result)
+        itinerary_data = None
+        errors = []
+        for attempt in range(2):
+            retry_instruction = ""
+            if attempt == 1:
+                retry_instruction = (
+                    "\nYour previous response failed validation for these reasons:\n"
+                    f"{json.dumps(errors, indent=2)}\n"
+                    "Return corrected JSON only."
+                )
+
+            result = llm.invoke([HumanMessage(content=prompt + retry_instruction)]).content
+            itinerary_data, errors = parse_and_validate_itinerary(result)
+            if itinerary_data:
+                break
+
         if not itinerary_data:
             return {
                 "itinerary": "",
                 "itinerary_data": {},
-                "warning": "The itinerary was generated, but it could not be parsed as structured JSON. Please try again.",
+                "warning": "The itinerary could not be generated as valid structured JSON after retry. Please try again.",
             }
 
-        markdown = _fallback_markdown_from_data(itinerary_data)
+        markdown = markdown_from_itinerary_data(itinerary_data)
         return {"itinerary": markdown.strip(), "itinerary_data": itinerary_data}
     except Exception as e:
         return {"itinerary": "", "itinerary_data": {}, "warning": str(e)}

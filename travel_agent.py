@@ -688,7 +688,11 @@ if st.session_state.state.get("itinerary"):
                 st.markdown(st.session_state.state["food_culture_info"])
 
         if st.button("Export as PDF"):
-            pdf_path = export_to_pdf(st.session_state.state["itinerary"])
+            pdf_path = export_to_pdf(
+                st.session_state.state["itinerary"],
+                map_points=st.session_state.state.get("map_points", []),
+                route_paths=st.session_state.state.get("route_paths", []),
+            )
             if pdf_path:
                 with open(pdf_path, "rb") as f:
                     st.download_button("Download Itinerary PDF", f, file_name="itinerary.pdf")

@@ -2,7 +2,7 @@ from langchain_core.messages import HumanMessage
 from langchain_community.chat_models import ChatOllama
 import json
 
-from agents.generate_itinerary import _extract_json_object, _fallback_markdown_from_data
+from agents.itinerary_schema import markdown_from_itinerary_data, parse_and_validate_itinerary
 
 
 def revise_itinerary(state):
@@ -74,15 +74,29 @@ def revise_itinerary(state):
     """
 
     try:
-        result = llm.invoke([HumanMessage(content=prompt)]).content
-        itinerary_data = _extract_json_object(result)
+        itinerary_data = None
+        errors = []
+        for attempt in range(2):
+            retry_instruction = ""
+            if attempt == 1:
+                retry_instruction = (
+                    "\nYour previous response failed validation for these reasons:\n"
+                    f"{json.dumps(errors, indent=2)}\n"
+                    "Return corrected JSON only."
+                )
+
+            result = llm.invoke([HumanMessage(content=prompt + retry_instruction)]).content
+            itinerary_data, errors = parse_and_validate_itinerary(result)
+            if itinerary_data:
+                break
+
         if not itinerary_data:
             return {
-                "chat_response": "I tried to update the itinerary, but the revised plan could not be parsed. Please try rephrasing the change.",
-                "warning": "The revised itinerary could not be parsed as structured JSON.",
+                "chat_response": "I tried to update the itinerary, but the revised plan could not be validated. Please try rephrasing the change.",
+                "warning": "The revised itinerary could not be validated as structured JSON after retry.",
             }
 
-        markdown = _fallback_markdown_from_data(itinerary_data)
+        markdown = markdown_from_itinerary_data(itinerary_data)
         revision_summary = itinerary_data.get("revision_summary", "Updated the itinerary based on your request.")
         return {
             "itinerary": markdown.strip(),
