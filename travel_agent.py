@@ -10,10 +10,12 @@ from langgraph.graph import END, StateGraph
 
 from agents import (
     chat_agent,
+    classify_chat_intent,
     fetch_useful_links,
     food_culture_recommender,
     generate_itinerary,
     recommend_activities,
+    revise_itinerary,
     weather_forecaster,
 )
 from services.google_maps_service import (
@@ -69,6 +71,11 @@ class GraphState(TypedDict):
     warning: str
     map_points: list[dict]
     map_warnings: list[str]
+    itinerary_versions: list[dict]
+    current_itinerary_version: int
+    latest_revision_request: str
+    revision_summary: str
+    chat_intent: str
     activity_suggestions: str
     useful_links: list[dict]
     weather_forecast: str
@@ -179,6 +186,34 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
                 return points, warnings
 
     return points, warnings
+
+
+def refresh_map_state(state: dict) -> None:
+    map_points, map_warnings = build_map_points(
+        state.get("preferences", {}),
+        state.get("itinerary_data", {}),
+    )
+    state["map_points"] = map_points
+    state["map_warnings"] = map_warnings
+
+
+def save_itinerary_version(state: dict, change_request: str = "", revision_summary: str = "") -> None:
+    if not state.get("itinerary"):
+        return
+
+    versions = state.get("itinerary_versions", [])
+    next_version = len(versions) + 1
+    versions.append(
+        {
+            "version": next_version,
+            "change_request": change_request,
+            "revision_summary": revision_summary,
+            "itinerary": state.get("itinerary", ""),
+            "itinerary_data": state.get("itinerary_data", {}),
+        }
+    )
+    state["itinerary_versions"] = versions
+    state["current_itinerary_version"] = next_version
 
 
 def build_route_segments(points: list[dict]) -> list[dict]:
@@ -308,6 +343,11 @@ if "state" not in st.session_state:
         "warning": "",
         "map_points": [],
         "map_warnings": [],
+        "itinerary_versions": [],
+        "current_itinerary_version": 0,
+        "latest_revision_request": "",
+        "revision_summary": "",
+        "chat_intent": "",
         "activity_suggestions": "",
         "useful_links": [],
         "weather_forecast": "",
@@ -430,6 +470,11 @@ if submit_btn:
             "warning": "",
             "map_points": [],
             "map_warnings": [],
+            "itinerary_versions": [],
+            "current_itinerary_version": 0,
+            "latest_revision_request": "",
+            "revision_summary": "",
+            "chat_intent": "",
             "useful_links": [],
             "weather_forecast": "",
             "packing_list": "",
@@ -441,15 +486,8 @@ if submit_btn:
         result = graph.invoke(st.session_state.state)
         st.session_state.state.update(result)
         if result.get("itinerary"):
-            map_points, map_warnings = build_map_points(
-                st.session_state.state["preferences"],
-                st.session_state.state.get("itinerary_data", {}),
-            )
-            st.session_state.state["map_points"] = map_points
-            if map_warnings:
-                st.session_state.state["map_warnings"] = map_warnings
-            else:
-                st.session_state.state["map_warnings"] = []
+            refresh_map_state(st.session_state.state)
+            save_itinerary_version(st.session_state.state)
             st.success("Itinerary Created")
         else:
             st.error(result.get("warning") or "Failed to generate itinerary.")
@@ -460,6 +498,8 @@ if st.session_state.state.get("itinerary"):
 
     with col_itin:
         st.markdown("### Travel Itinerary")
+        if st.session_state.state.get("current_itinerary_version"):
+            st.caption(f"Itinerary Version {st.session_state.state['current_itinerary_version']}")
         st.markdown(st.session_state.state["itinerary"])
 
         if st.session_state.state.get("map_points"):
@@ -547,9 +587,43 @@ if st.session_state.state.get("itinerary"):
 
         if user_input := st.chat_input("Ask something about your itinerary"):
             st.session_state.state["user_question"] = user_input
-            with st.spinner("Generating response..."):
-                result = chat_agent.chat_node(st.session_state.state)
-                st.session_state.state.update(result)
+            with st.spinner("Processing chat..."):
+                intent_result = classify_chat_intent.classify_chat_intent(st.session_state.state)
+                st.session_state.state.update(intent_result)
+
+                if intent_result.get("chat_intent") == "revise":
+                    result = revise_itinerary.revise_itinerary(st.session_state.state)
+                    if result.get("itinerary"):
+                        st.session_state.state.update(result)
+                        st.session_state.state.update(
+                            {
+                                "activity_suggestions": "",
+                                "useful_links": [],
+                                "weather_forecast": "",
+                                "food_culture_info": "",
+                            }
+                        )
+                        refresh_map_state(st.session_state.state)
+                        save_itinerary_version(
+                            st.session_state.state,
+                            change_request=user_input,
+                            revision_summary=result.get("revision_summary", ""),
+                        )
+                        chat_entry = {
+                            "question": user_input,
+                            "response": result.get("chat_response", "Updated your itinerary."),
+                        }
+                        st.session_state.state["chat_history"] = st.session_state.state.get("chat_history", []) + [chat_entry]
+                    else:
+                        chat_entry = {
+                            "question": user_input,
+                            "response": result.get("chat_response") or result.get("warning") or "I could not update the itinerary.",
+                        }
+                        st.session_state.state["chat_history"] = st.session_state.state.get("chat_history", []) + [chat_entry]
+                        st.session_state.state.update(result)
+                else:
+                    result = chat_agent.chat_node(st.session_state.state)
+                    st.session_state.state.update(result)
                 st.rerun()
 else:
     st.info("Fill the form and generate an itinerary to begin.")
