@@ -43,20 +43,21 @@ def _fallback_markdown_from_data(data: dict) -> str:
             item_type = item.get("type", "activity")
             description = item.get("description", "")
             transport = item.get("transport_note", "")
-            lines.append(f"- **{time_label} | {name}** ({item_type})")
+            lines.append(f"### {time_label}: {name}")
+            lines.append(f"*{item_type.title()}*")
             if description:
-                lines.append(f"  {description}")
+                lines.append(description)
             if transport:
-                lines.append(f"  Transport: {transport}")
-        lines.append("")
+                lines.append(f"Transport: {transport}")
+            lines.append("")
 
         dining = day.get("dining")
         if dining:
-            lines.extend(["Dining:", dining, ""])
+            lines.extend(["**Dining**", dining, ""])
 
         downtime = day.get("downtime")
         if downtime:
-            lines.extend(["Downtime:", downtime, ""])
+            lines.extend(["**Downtime**", downtime, ""])
 
     return "\n".join(lines).strip()
 
@@ -76,7 +77,10 @@ def generate_itinerary(state):
         "- Use the confirmed hotel object as the daily route anchor. Start and end days near this hotel when practical.\n"
         "- Use the hotel's address and coordinates to reduce unnecessary travel between distant areas."
         if hotel
-        else "- No confirmed hotel was provided, so choose sensible central daily route anchors."
+        else (
+            "- No confirmed hotel was provided. Do not invent a hotel, do not mention a hotel anchor, "
+            "and plan each day around geographically clustered areas in the destination."
+        )
     )
 
     prompt = f"""
@@ -92,11 +96,11 @@ def generate_itinerary(state):
     - Avoid unnecessary cross-city backtracking.
 
     Return only one valid JSON object. Do not wrap it in markdown fences.
+    Do not include a markdown field. Do not include multi-line string values.
     The JSON object must use this schema:
     {{
       "title": "string",
       "summary": "string",
-      "markdown": "A complete readable itinerary in Markdown",
       "days": [
         {{
           "day": 1,
@@ -118,21 +122,21 @@ def generate_itinerary(state):
     }}
 
     Requirements:
-    - The markdown field must be ready to display to the user.
     - The days/items data must include every major attraction and restaurant needed for later map lookup.
     - Include morning, afternoon, evening, dining options, downtime, and brief transport notes.
+    - Keep every string value short and single-line so the JSON remains valid.
     """
     try:
         result = llm.invoke([HumanMessage(content=prompt)]).content
         itinerary_data = _extract_json_object(result)
         if not itinerary_data:
             return {
-                "itinerary": result.strip(),
+                "itinerary": "",
                 "itinerary_data": {},
-                "warning": "The itinerary was generated, but it could not be parsed as structured JSON.",
+                "warning": "The itinerary was generated, but it could not be parsed as structured JSON. Please try again.",
             }
 
-        markdown = itinerary_data.get("markdown") or _fallback_markdown_from_data(itinerary_data)
+        markdown = _fallback_markdown_from_data(itinerary_data)
         return {"itinerary": markdown.strip(), "itinerary_data": itinerary_data}
     except Exception as e:
         return {"itinerary": "", "itinerary_data": {}, "warning": str(e)}

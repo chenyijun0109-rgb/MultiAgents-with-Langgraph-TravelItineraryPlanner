@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated, TypedDict
 
-import pandas as pd
+import pydeck as pdk
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_community.chat_models import ChatOllama
@@ -28,6 +28,22 @@ from utils_export import export_to_pdf
 
 load_dotenv()
 
+DAY_COLORS = [
+    [46, 125, 50, 210],
+    [21, 101, 192, 210],
+    [239, 108, 0, 210],
+    [123, 31, 162, 210],
+    [0, 121, 107, 210],
+    [198, 40, 40, 210],
+    [69, 90, 100, 210],
+]
+TYPE_MARKERS = {
+    "hotel": "H",
+    "attraction": "A",
+    "restaurant": "R",
+    "activity": "V",
+}
+
 st.set_page_config(page_title="AI Travel Planner", layout="wide")
 
 
@@ -50,6 +66,7 @@ class GraphState(TypedDict):
     preferences: dict
     itinerary: str
     itinerary_data: dict
+    warning: str
     map_points: list[dict]
     map_warnings: list[str]
     activity_suggestions: str
@@ -103,11 +120,16 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
                 "day": 0,
                 "name": hotel.get("name", "Hotel"),
                 "type": "hotel",
+                "type_label": "Hotel",
+                "day_label": "Hotel",
+                "order": 0,
                 "lat": hotel.get("lat"),
                 "lng": hotel.get("lng"),
                 "address": hotel.get("address", ""),
                 "maps_url": hotel.get("maps_url", ""),
                 "photo_url": hotel.get("photo_url", ""),
+                "color": [33, 33, 33, 235],
+                "marker": TYPE_MARKERS["hotel"],
             }
         )
 
@@ -118,7 +140,9 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
     destination_lng = preferences.get("destination_lng")
 
     for day in itinerary_data.get("days", []):
-        for item in day.get("items", []):
+        day_number = day.get("day")
+        day_color = DAY_COLORS[(int(day_number or 1) - 1) % len(DAY_COLORS)]
+        for order, item in enumerate(day.get("items", []), start=1):
             item_type = item.get("type", "").lower()
             name = item.get("name", "").strip()
             if not name or item_type not in searchable_types or name.lower() in seen:
@@ -133,14 +157,20 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
 
             points.append(
                 {
-                    "day": day.get("day"),
+                    "day": day_number,
+                    "day_label": f"Day {day_number}",
+                    "date": day.get("date", ""),
+                    "order": order,
                     "name": place.get("name", name),
                     "type": item_type,
+                    "type_label": item_type.title(),
                     "lat": place.get("lat"),
                     "lng": place.get("lng"),
                     "address": place.get("address", ""),
                     "maps_url": place.get("maps_url", ""),
                     "photo_url": place.get("photo_url", ""),
+                    "color": day_color,
+                    "marker": TYPE_MARKERS.get(item_type, "P"),
                 }
             )
             seen.add(name.lower())
@@ -149,6 +179,115 @@ def build_map_points(preferences: dict, itinerary_data: dict) -> tuple[list[dict
                 return points, warnings
 
     return points, warnings
+
+
+def build_route_segments(points: list[dict]) -> list[dict]:
+    hotel = next((point for point in points if point.get("type") == "hotel"), None)
+    segments = []
+    day_numbers = sorted({point.get("day") for point in points if point.get("day")})
+
+    for day_number in day_numbers:
+        day_points = sorted(
+            [point for point in points if point.get("day") == day_number],
+            key=lambda point: point.get("order", 0),
+        )
+        if len(day_points) < 2 and not hotel:
+            continue
+
+        route_points = day_points
+        if hotel:
+            route_points = [hotel, *day_points, hotel]
+
+        color = DAY_COLORS[(int(day_number) - 1) % len(DAY_COLORS)]
+        for start, end in zip(route_points, route_points[1:]):
+            if start.get("lat") == end.get("lat") and start.get("lng") == end.get("lng"):
+                continue
+            segments.append(
+                {
+                    "day": day_number,
+                    "source": [start["lng"], start["lat"]],
+                    "target": [end["lng"], end["lat"]],
+                    "from_name": start["name"],
+                    "to_name": end["name"],
+                    "color": color,
+                }
+            )
+
+    return segments
+
+
+def render_itinerary_map(points: list[dict]) -> None:
+    if not points:
+        return
+
+    route_segments = build_route_segments(points)
+    center_lat = sum(point["lat"] for point in points) / len(points)
+    center_lng = sum(point["lng"] for point in points) / len(points)
+
+    layers = []
+    if route_segments:
+        layers.append(
+            pdk.Layer(
+                "LineLayer",
+                data=route_segments,
+                get_source_position="source",
+                get_target_position="target",
+                get_color="color",
+                get_width=4,
+                pickable=True,
+            )
+        )
+
+    layers.extend(
+        [
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=points,
+                get_position="[lng, lat]",
+                get_fill_color="color",
+                get_radius=160,
+                radius_min_pixels=7,
+                radius_max_pixels=18,
+                pickable=True,
+            ),
+            pdk.Layer(
+                "TextLayer",
+                data=points,
+                get_position="[lng, lat]",
+                get_text="marker",
+                get_color=[255, 255, 255],
+                get_size=15,
+                get_alignment_baseline="'center'",
+                get_text_anchor="'middle'",
+                pickable=False,
+            ),
+        ]
+    )
+
+    tooltip = {
+        "html": (
+            "<b>{name}</b><br/>"
+            "{day_label}<br/>"
+            "{type_label}<br/>"
+            "{address}"
+        ),
+        "style": {"backgroundColor": "#1f2937", "color": "white"},
+    }
+
+    st.pydeck_chart(
+        pdk.Deck(
+            map_style=None,
+            initial_view_state=pdk.ViewState(
+                latitude=center_lat,
+                longitude=center_lng,
+                zoom=11,
+                pitch=25,
+            ),
+            layers=layers,
+            tooltip=tooltip,
+        ),
+        use_container_width=True,
+    )
 
 
 workflow = StateGraph(GraphState)
@@ -166,6 +305,7 @@ if "state" not in st.session_state:
         "preferences": {},
         "itinerary": "",
         "itinerary_data": {},
+        "warning": "",
         "map_points": [],
         "map_warnings": [],
         "activity_suggestions": "",
@@ -281,11 +421,13 @@ if submit_btn:
         {
             "preferences_text": preferences_text,
             "preferences": preferences,
+            "itinerary": "",
             "chat_history": [],
             "user_question": "",
             "chat_response": "",
             "activity_suggestions": "",
             "itinerary_data": {},
+            "warning": "",
             "map_points": [],
             "map_warnings": [],
             "useful_links": [],
@@ -322,8 +464,7 @@ if st.session_state.state.get("itinerary"):
 
         if st.session_state.state.get("map_points"):
             st.markdown("### Map Overview")
-            map_df = pd.DataFrame(st.session_state.state["map_points"])
-            st.map(map_df, latitude="lat", longitude="lng")
+            render_itinerary_map(st.session_state.state["map_points"])
             with st.expander("Map Places", expanded=False):
                 for point in st.session_state.state["map_points"]:
                     label = f"Day {point['day']}" if point.get("day") else "Hotel"
