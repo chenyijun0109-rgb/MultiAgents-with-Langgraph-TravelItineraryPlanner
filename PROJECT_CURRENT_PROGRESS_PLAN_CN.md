@@ -1,252 +1,296 @@
 # AI Travel Itinerary Planner 当前进度与后续计划
 
-## 1. 当前版本状态
+## 1. 当前版本总结
 
-当前版本已经完成旅行计划核心链路的第一轮重构：
+当前项目已经从“文本行程生成器”升级为“基于真实地点、地图、图片、路线和动态修改的旅行计划工具”。
 
-- 目的地使用 Google Places Autocomplete，不再使用本地城市列表。
-- 用户必须从 Google Places 候选中选择目的地。
-- 目的地会通过 Place Details 获取标准名称、地址、经纬度和 `place_id`。
+当前已完成：
+
+- 目的地使用 Google Places Autocomplete。
+- 目的地必须从 Google Places 候选中选择。
+- 目的地通过 Place Details 获取名称、地址、经纬度和 `place_id`。
 - 表单已删除 `Holiday Type`、`Budget Type`、`Number of People`。
-- 暂时隐藏 `Packing List`，优先做好旅行计划本体。
+- 暂时隐藏 `Packing List`。
 - `Month of Travel` 已改为 `Travel Start Date`。
 - 酒店输入为可选项。
-- 输入酒店时，系统会用 Google Places 查询真实酒店位置。
+- 输入酒店时，系统会查询真实酒店位置。
 - 不输入酒店时，系统不会发明酒店，也不会围绕酒店规划。
-- 行程生成已改为结构化 JSON 数据。
-- 页面 Markdown 由程序渲染，不再直接展示模型返回的 JSON 原文。
+- 行程生成已改为结构化 JSON。
+- 页面 Markdown 由程序渲染，不直接展示模型 JSON 原文。
 - 景点、餐厅、活动会通过 Google Places 查询坐标。
-- 地图已升级为 `pydeck`，支持颜色、标记、tooltip 和路线连线。
-- 真实路线已接入 Google Directions API 第一版，失败时保留直线 fallback。
-- 景点图片已接入 Google Places Photos API 第一版。
-- Chat 动态修改行程已完成第一版。
-- JSON schema 校验和失败自动重试已完成第一版。
-- PDF 已支持路线链接、地点链接和主要地点图片。
+- 地图已升级为 `pydeck`。
+- 地图支持颜色、标记、tooltip 和路线展示。
+- 真实路线已接入 Google Directions API 第一版。
+- Google Directions 失败时保留直线 fallback。
+- 地点图片已接入 Google Places Photos API 第一版。
+- Chat 可以区分普通问答和修改请求。
+- Chat 修改请求会更新主行程，并刷新地图和图片。
+- 已保存 itinerary 版本历史。
+- JSON schema 校验已完成第一版。
+- 生成和修改行程失败时会自动重试一次。
+- PDF 已支持行程文本、路线链接、地点链接和主要地点图片。
 
 ## 2. 当前用户流程
 
 1. 用户输入目的地。
 2. Google Places 返回目的地候选。
 3. 用户选择目的地。
-4. 用户选择旅行开始日期和天数。
+4. 用户选择旅行开始日期和旅行天数。
 5. 用户可选输入酒店名称。
 6. 用户填写额外偏好。
-7. 点击生成行程。
+7. 用户点击生成行程。
 8. 系统校验目的地。
 9. 如果填写酒店，系统校验酒店。
 10. 系统生成结构化 itinerary。
 11. 程序把结构化 itinerary 渲染成 Markdown。
 12. 系统查询景点、餐厅、活动坐标。
-13. 页面显示行程、地图、地点链接和图片。
-14. 用户可以在 Chat 中提问，或直接要求修改行程。
-15. 如果 Chat 内容是修改请求，系统会更新主行程并刷新地图和图片。
+13. 系统生成每日真实路线。
+14. 页面显示行程、地图、路线链接、地点链接和地点图片。
+15. 用户可以通过 Chat 提问或要求修改行程。
+16. 修改行程后，系统重新生成结构化 itinerary、地图、路线和图片。
+17. 用户可以导出包含路线链接和图片的 PDF。
 
-## 3. 已完成模块
+## 3. 已完成模块清单
 
-### 3.1 Google Places 目的地自动补全
+### 3.1 输入与校验
 
-文件：
+完成内容：
 
-- `services/google_maps_service.py`
+- 空输入拦截。
+- 目的地 Google Places Autocomplete。
+- 目的地 Place Details 校验。
+- 酒店 Google Places Text Search。
+- 酒店可选逻辑。
+- 无酒店时不发明酒店、不围绕酒店规划。
+
+相关文件：
+
 - `travel_agent.py`
-
-已实现：
-
-- `autocomplete_cities`
-- `get_place_details`
-- `GOOGLE_MAPS_API_KEY` 检查
-- 目的地候选选择
-- 未选择候选时不生成
-
-### 3.2 Google Places 酒店查询
-
-文件：
-
 - `services/google_maps_service.py`
-- `travel_agent.py`
-
-已实现：
-
-- `search_hotel`
-- 酒店输入可选
-- 输入酒店时必须能确认真实地点
-- 酒店坐标进入 state 和 prompt
-- 不输入酒店时不会生成酒店约束
-
-### 3.3 结构化 itinerary
-
-文件：
-
 - `agents/generate_itinerary.py`
-- `travel_agent.py`
 
-已实现：
+### 3.2 结构化行程
+
+完成内容：
 
 - LLM 返回结构化 JSON。
 - JSON 包含 `title`、`summary`、`days/items`。
-- 程序负责渲染 Markdown。
+- 程序渲染 Markdown。
 - state 保存 `itinerary_data`。
-- JSON 解析失败时显示错误提示，不展示 JSON 原文。
+- schema 校验。
+- 失败自动重试一次。
 
-### 3.4 地图展示
+相关文件：
 
-文件：
+- `agents/itinerary_schema.py`
+- `agents/generate_itinerary.py`
+- `agents/revise_itinerary.py`
+
+### 3.3 地图与真实路线
+
+完成内容：
+
+- Google Places 查询景点、餐厅、活动坐标。
+- `pydeck` 地图。
+- 不同日期不同颜色。
+- 酒店、景点、餐厅、活动字母标记。
+- hover tooltip。
+- Google Directions API 真实路线。
+- Directions 失败时直线 fallback。
+- 每日 Google Maps 路线链接。
+
+相关文件：
 
 - `travel_agent.py`
+- `services/google_maps_service.py`
 
-已实现：
+### 3.4 图片
 
-- `pydeck` 地图。
-- 每天使用不同颜色。
-- 酒店、景点、餐厅、活动使用字母标记。
-- hover tooltip 显示地点名称、日期、类型和地址。
-- 每日路线连线。
-- Google Maps 链接列表作为可点击入口。
+完成内容：
 
-说明：`st.pydeck_chart` 不提供点位点击回调，因此地图点位点击弹窗暂时无法原生实现。当前用 hover tooltip + Google Maps 链接列表满足基本交互。
+- Google Places Photos API 图片 URL。
+- 页面按天展示地点图片。
+- 每天最多展示 3 张。
+- 图片失败不影响行程和地图。
 
-### 3.5 景点图片
-
-文件：
+相关文件：
 
 - `services/google_maps_service.py`
 - `travel_agent.py`
 
-已实现：
+### 3.5 Chat 动态修改
 
-- Google Places Photo URL。
-- 按天展示地点图片。
-- 每天最多展示 3 张。
-- 图片失败不影响行程和地图。
+完成内容：
 
-### 3.6 Chat 动态修改行程
+- Chat 意图分类。
+- 普通问题走原有问答。
+- 修改请求调用 `revise_itinerary`。
+- 修改后更新 `itinerary` 和 `itinerary_data`。
+- 修改后刷新地图、路线和图片。
+- 保存 itinerary version。
+- 页面显示当前版本号。
 
-文件：
+相关文件：
 
 - `agents/classify_chat_intent.py`
 - `agents/revise_itinerary.py`
 - `travel_agent.py`
 
-已实现：
+### 3.6 PDF 导出
 
-- `classify_chat_intent` 判断普通问答或修改请求。
-- 普通问题继续走原有 `chat_agent`。
-- 修改请求调用 `revise_itinerary`。
-- 修改后更新 `itinerary` 和 `itinerary_data`。
-- 修改后刷新地图点位和图片。
-- 保存 `itinerary_versions`。
-- 页面显示当前 itinerary version。
+完成内容：
+
+- 导出行程文本。
+- 导出每日路线链接。
+- 导出地点 Google Maps 链接。
+- 导出主要地点图片。
+- 图片失败时跳过。
+
+相关文件：
+
+- `utils_export.py`
+- `travel_agent.py`
 
 ## 4. 当前限制
 
-### 4.1 真实路线仍需增强
+### 4.1 Chat 版本管理还不完整
 
-当前已经接入 Google Directions API，可以用 overview polyline 展示真实路线，并提供每日 Google Maps 路线链接。
+当前已经保存版本，但还没有完整 UI 支持：
 
-仍需增强：
+- 查看版本历史。
+- 恢复任意版本。
+- 撤销上一版。
+- 修改前确认。
 
-- 支持用户选择 walking / driving / transit 等模式。
-- 处理 Directions API 未启用或超额时的更友好提示。
-- 展示每段路线的详细步骤。
-- 根据距离自动选择交通方式。
+### 4.2 路线体验仍可增强
 
-### 4.2 JSON 稳定性仍需增强
+当前 Directions API 已接入，但路线体验还比较基础：
 
-当前已经加入 schema 校验，并在生成和修改行程时失败自动重试一次。
+- 没有路线模式选择。
+- 没有根据距离自动建议步行、公交或打车。
+- 没有展示每段路线步骤。
+- 没有展示 Directions API 的版权和 warnings。
 
-仍可继续增强：
+### 4.3 PDF 排版还比较基础
 
-- 将“生成结构化数据”和“渲染文字说明”拆成两个步骤。
-- 将 schema 迁移为 Pydantic 等更严格的数据模型。
-- 针对不同错误类型提供更具体的用户提示。
+当前 PDF 已包含更多内容，但排版仍然简单：
 
-### 4.3 PDF 和图片归因仍需增强
+- 没有静态地图图片。
+- 图片归因不完整。
+- 标题层级和分页还可以优化。
+- 中文内容仍可能受 `fpdf` 字体限制影响。
 
-当前 PDF 已包含：
+### 4.4 JSON 稳定性仍可增强
 
-- 行程文本。
-- 每日路线链接。
-- 地点 Google Maps 链接。
-- 可用的主要地点图片。
+当前已完成第一版 schema 校验和自动重试，但仍可以继续增强：
 
-仍需增强：
+- 使用 Pydantic 或更严格的数据模型。
+- 根据错误类型给用户更具体提示。
+- 将生成结构化数据和生成文字说明拆成两个步骤。
 
-- 图片归因。
-- 图片缓存或代理。
-- PDF 排版美化。
-- PDF 中加入静态地图图片。
+### 4.5 文档和 README 还未同步
 
-### 4.4 Chat 动态修改仍需增强
+README 仍然描述旧版本功能，需要更新：
 
-当前 Chat 已经可以修改主行程，但仍需增强：
+- Google Places。
+- Google Directions。
+- 结构化 itinerary。
+- 地图和图片。
+- Chat 动态修改。
+- 新增环境变量。
 
-- 更准确的意图分类。
-- 支持撤销到上一版。
-- 支持查看版本历史。
-- 修改失败时自动重试。
-- 修改前可选确认。
+## 5. 后续开发计划
 
-## 5. 下一步推荐开发
-
-### 阶段 A：Chat 动态修改增强
+### 阶段 A：Chat 版本历史和撤销
 
 目标：
 
-- 增加撤销上一版。
-- 增加版本历史查看。
-- 修改失败自动重试。
-- 修改前可选确认。
+- 增加版本历史 UI。
+- 支持恢复上一版。
+- 支持恢复任意版本。
+- 展示每次修改摘要。
 
 验收标准：
 
-- 用户可以恢复上一版。
-- 用户可以看到每次修改摘要。
+- 用户可以撤销最近一次 Chat 修改。
+- 用户可以查看所有 itinerary versions。
+- 恢复版本后，地图、路线和图片同步刷新。
 
 ### 阶段 B：路线体验增强
 
 目标：
 
-- 支持选择路线模式。
-- 展示每段路线的距离和时间。
-- 根据距离建议步行、公交或打车。
+- 增加路线模式选择，例如 walking、driving、transit。
+- 展示路线距离和时间。
+- 展示 Directions warnings。
+- 后续根据距离建议交通方式。
 
 验收标准：
 
-- 路线信息不只是总距离和总时间。
-- 用户能看到更清楚的交通建议。
+- 用户可以选择出行方式。
+- 每日路线信息更清楚。
+- API fallback 行为更友好。
 
-### 阶段 C：版本历史和撤销
-
-目标：
-
-- 增加版本历史查看。
-- 增加撤销上一版。
-- 每次修改显示 revision summary。
-
-### 阶段 D：PDF 和图片进一步增强
+### 阶段 C：PDF 排版与地图增强
 
 目标：
 
-- PDF 排版优化。
-- PDF 包含静态地图图片。
-- 图片归因信息更完整。
+- PDF 支持更好的标题层级。
+- PDF 支持静态地图图片。
+- PDF 支持图片归因。
+- 改善中文字体支持。
+
+验收标准：
+
+- PDF 可读性明显提升。
+- PDF 不只是链接和文字。
+- 图片来源说明更完整。
+
+### 阶段 D：README 和项目文档更新
+
+目标：
+
+- 更新 README。
+- 更新运行方式。
+- 更新 `.env` 配置说明。
+- 说明需要启用的 Google API。
+- 说明当前功能和限制。
+
+验收标准：
+
+- 新用户可以按 README 配置并运行项目。
+- 文档内容与当前代码一致。
+
+### 阶段 E：JSON 稳定性第二版
+
+目标：
+
+- 引入更严格 schema。
+- 对模型输出错误分类。
+- 对失败场景给更清晰提示。
+
+验收标准：
+
+- JSON 失败率进一步降低。
+- 用户不会看到模型原始输出。
 
 ## 6. 当前最推荐的下一步
 
-最推荐下一步做：**Chat 动态修改增强**。
+最推荐下一步做：**Chat 版本历史和撤销**。
 
 原因：
 
-- 目的地、酒店、地图、图片、真实路线和 Chat 动态修改第一版都已经完成。
-- 当前 Chat 修改还不能撤销，也不能查看版本历史。
-- 增加版本历史和撤销会让用户更敢于反复调整行程。
+- Chat 动态修改已经完成第一版。
+- 当前已经保存版本，但用户还不能使用版本历史。
+- 加上撤销后，用户会更放心地反复调整行程。
 
 建议实现顺序：
 
-1. 增加版本历史 UI。
-2. 增加 Undo Last Revision。
-3. 支持查看每次 revision summary。
-4. 修改失败时保留当前版本并提示重试。
+1. 在页面显示 version history expander。
+2. 增加 `Undo Last Revision` 按钮。
+3. 增加 `Restore Version` 逻辑。
+4. 恢复版本后刷新地图、路线和图片。
+5. 保留当前版本号和修改摘要。
 
 ## 7. 里程碑状态
 
@@ -254,7 +298,11 @@
 - Milestone 2：真实地点，已完成第一版。
 - Milestone 3：结构化计划，已完成第一版。
 - Milestone 4：地图和图片，已完成第一版。
-- Milestone 5：动态修改，已完成第一版。
+- Milestone 5：Chat 动态修改，已完成第一版。
 - Milestone 6：真实路线，已完成第一版。
 - Milestone 7：JSON 稳定性，已完成第一版。
 - Milestone 8：PDF 增强，已完成第一版。
+
+## 8. 总结
+
+当前项目已经具备比较完整的旅行计划核心能力。下一步不建议继续堆新功能，而是优先提升“可控性”和“可恢复性”：先把 Chat 修改后的版本历史和撤销做好，再增强路线体验和 PDF 排版。这样项目会更像一个可以持续编辑的旅行计划工具，而不是一次性生成器。
